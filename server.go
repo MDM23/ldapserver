@@ -40,6 +40,18 @@ func (s *Server) Handle(h Handler) {
 	s.Handler = h
 }
 
+// Listen uses the given Listener to handle incoming requests.
+func (s *Server) Listen(listener *net.Listener, options ...func(*Server)) error {
+	s.Listener = *listener
+	Logger.Printf("Listening on %s\n", s.Listener.Addr())
+
+	for _, option := range options {
+		option(s)
+	}
+
+	return s.serve()
+}
+
 // ListenAndServe listens on the TCP network address s.Addr and then
 // calls Serve to handle requests on incoming connections.  If
 // s.Addr is blank, ":389" is used.
@@ -49,18 +61,12 @@ func (s *Server) ListenAndServe(addr string, options ...func(*Server)) error {
 		addr = ":389"
 	}
 
-	var e error
-	s.Listener, e = net.Listen("tcp", addr)
+	listener, e := net.Listen("tcp", addr)
 	if e != nil {
 		return e
 	}
-	Logger.Printf("Listening on %s\n", addr)
 
-	for _, option := range options {
-		option(s)
-	}
-
-	return s.serve()
+	return s.Listen(&listener)
 }
 
 // Handle requests messages on the ln listener
