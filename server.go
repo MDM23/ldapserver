@@ -3,17 +3,17 @@ package ldapserver
 import (
 	"bufio"
 	"net"
-	"sync"
 	"time"
 )
 
 // Server is an LDAP server.
 type Server struct {
 	Listener     net.Listener
-	ReadTimeout  time.Duration  // optional read timeout
-	WriteTimeout time.Duration  // optional write timeout
-	wg           sync.WaitGroup // group of goroutines (1 by client)
-	chDone       chan bool      // Channel Done, value => shutdown
+	ReadTimeout  time.Duration // optional read timeout
+	WriteTimeout time.Duration // optional write timeout
+	// wg           sync.WaitGroup // group of goroutines (1 by client)
+	chDone  chan bool // Channel Done, value => shutdown
+	clients map[int]*client
 
 	// OnNewConnection, if non-nil, is called on new connections.
 	// If it returns non-nil, the connection is closed.
@@ -27,7 +27,8 @@ type Server struct {
 //NewServer return a LDAP Server
 func NewServer() *Server {
 	return &Server{
-		chDone: make(chan bool),
+		chDone:  make(chan bool),
+		clients: make(map[int]*client),
 	}
 }
 
@@ -56,7 +57,6 @@ func (s *Server) Listen(listener *net.Listener, options ...func(*Server)) error 
 // calls Serve to handle requests on incoming connections.  If
 // s.Addr is blank, ":389" is used.
 func (s *Server) ListenAndServe(addr string, options ...func(*Server)) error {
-
 	if addr == "" {
 		addr = ":389"
 	}
@@ -83,7 +83,6 @@ func (s *Server) serve() error {
 		select {
 		case <-s.chDone:
 			Logger.Print("Stopping server")
-			s.Listener.Close()
 			return nil
 		default:
 		}
@@ -104,29 +103,39 @@ func (s *Server) serve() error {
 		}
 
 		cli, err := s.newClient(rw)
-
 		if err != nil {
 			continue
 		}
 
 		i = i + 1
 		cli.Numero = i
-		Logger.Printf("Connection client [%d] from %s accepted", cli.Numero, cli.rwc.RemoteAddr().String())
-		s.wg.Add(1)
-		go cli.serve()
-	}
+		Logger.Printf("Connection client [%d] from %s accepted", cli.Numero, cli.RemoteAddr().String())
 
-	return nil
+		s.clients[i] = cli
+		// s.wg.Add(1)
+
+		go cli.serve()
+
+		// go func() {
+		// 	cli.serve()
+		// 	s.wg.Done()
+		// }()
+	}
 }
 
 // Return a new session with the connection
 // client has a writer and reader buffer
-func (s *Server) newClient(rwc net.Conn) (c *client, err error) {
+func (s *Server) newClient(conn net.Conn) (c *client, err error) {
 	c = &client{
-		srv: s,
-		rwc: rwc,
-		br:  bufio.NewReader(rwc),
-		bw:  bufio.NewWriter(rwc),
+		Conn: conn,
+		// srv: s,
+		// rwc: rwc,
+		br:              bufio.NewReader(conn),
+		bw:              bufio.NewWriter(conn),
+		onNewConnection: s.OnNewConnection,
+		Handler:         s.Handler,
+		ReadTimeout:     s.ReadTimeout,
+		WriteTimeout:    s.WriteTimeout,
 	}
 	return c, nil
 }
@@ -144,6 +153,14 @@ func (s *Server) newClient(rwc net.Conn) (c *client, err error) {
 func (s *Server) Stop() {
 	close(s.chDone)
 	Logger.Print("gracefully closing client connections...")
-	s.wg.Wait()
+
+	for _, c := range s.clients {
+		if c != nil {
+			c.close()
+		}
+	}
+
+	// s.wg.Wait()
 	Logger.Print("all clients connection closed")
+	s.Listener.Close()
 }

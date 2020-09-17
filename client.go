@@ -10,22 +10,27 @@ import (
 )
 
 type client struct {
-	Numero      int
-	srv         *Server
-	rwc         net.Conn
-	br          *bufio.Reader
-	bw          *bufio.Writer
-	chanOut     chan *ldap.LDAPMessage
-	wg          sync.WaitGroup
-	closing     chan bool
-	requestList map[int]*Message
-	mutex       sync.Mutex
-	writeDone   chan bool
-	rawData     []byte
+	net.Conn
+	Numero int
+	// srv         *Server
+	// rwc         net.Conn
+	br              *bufio.Reader
+	bw              *bufio.Writer
+	chanOut         chan *ldap.LDAPMessage
+	wg              sync.WaitGroup
+	closing         chan bool
+	requestList     map[int]*Message
+	mutex           sync.Mutex
+	writeDone       chan bool
+	rawData         []byte
+	onNewConnection func(c net.Conn) error
+	Handler         Handler
+	ReadTimeout     time.Duration // optional read timeout
+	WriteTimeout    time.Duration // optional write timeout
 }
 
 func (c *client) GetConn() net.Conn {
-	return c.rwc
+	return c.Conn
 }
 
 func (c *client) GetRaw() []byte {
@@ -33,9 +38,9 @@ func (c *client) GetRaw() []byte {
 }
 
 func (c *client) SetConn(conn net.Conn) {
-	c.rwc = conn
-	c.br = bufio.NewReader(c.rwc)
-	c.bw = bufio.NewWriter(c.rwc)
+	c.Conn = conn
+	c.br = bufio.NewReader(c.Conn)
+	c.bw = bufio.NewWriter(c.Conn)
 }
 
 func (c *client) GetMessageByID(messageID int) (*Message, bool) {
@@ -46,7 +51,7 @@ func (c *client) GetMessageByID(messageID int) (*Message, bool) {
 }
 
 func (c *client) Addr() net.Addr {
-	return c.rwc.RemoteAddr()
+	return c.RemoteAddr()
 }
 
 func (c *client) ReadPacket() (*messagePacket, error) {
@@ -60,8 +65,8 @@ func (c *client) serve() {
 	defer c.close()
 
 	c.closing = make(chan bool)
-	if onc := c.srv.OnNewConnection; onc != nil {
-		if err := onc(c.rwc); err != nil {
+	if onc := c.onNewConnection; onc != nil {
+		if err := onc(c.Conn); err != nil {
 			Logger.Printf("Erreur OnNewConnection: %s", err)
 			return
 		}
@@ -84,7 +89,7 @@ func (c *client) serve() {
 	go func() {
 		for {
 			select {
-			case <-c.srv.chDone: // server signals shutdown process
+			case <-c.closing:
 				c.wg.Add(1)
 				r := NewExtendedResponse(LDAPResultUnwillingToPerform)
 				r.SetDiagnosticMessage("server is about to stop")
@@ -94,9 +99,7 @@ func (c *client) serve() {
 
 				c.chanOut <- m
 				c.wg.Done()
-				c.rwc.SetReadDeadline(time.Now().Add(time.Millisecond))
-				return
-			case <-c.closing:
+				c.SetReadDeadline(time.Now().Add(time.Millisecond))
 				return
 			}
 		}
@@ -106,11 +109,11 @@ func (c *client) serve() {
 
 	for {
 
-		if c.srv.ReadTimeout != 0 {
-			c.rwc.SetReadDeadline(time.Now().Add(c.srv.ReadTimeout))
+		if c.ReadTimeout != 0 {
+			c.SetReadDeadline(time.Now().Add(c.ReadTimeout))
 		}
-		if c.srv.WriteTimeout != 0 {
-			c.rwc.SetWriteDeadline(time.Now().Add(c.srv.WriteTimeout))
+		if c.WriteTimeout != 0 {
+			c.SetWriteDeadline(time.Now().Add(c.WriteTimeout))
 		}
 
 		//Read client input as a ASN1/BER binary message
@@ -173,7 +176,7 @@ func (c *client) close() {
 	close(c.closing)
 
 	// stop reading from client
-	c.rwc.SetReadDeadline(time.Now().Add(time.Millisecond))
+	c.SetReadDeadline(time.Now().Add(time.Millisecond))
 	Logger.Printf("client %d close() - stop reading from client", c.Numero)
 
 	// signals to all currently running request processor to stop
@@ -190,10 +193,10 @@ func (c *client) close() {
 	Logger.Printf("client [%d] request processors ended", c.Numero)
 
 	<-c.writeDone // Wait for the last message sent to be written
-	c.rwc.Close() // close client connection
+	c.Close()     // close client connection
 	Logger.Printf("client [%d] connection closed", c.Numero)
 
-	c.srv.wg.Done() // signal to server that client shutdown is ok
+	// c.srv.wg.Done() // signal to server that client shutdown is ok
 }
 
 func (c *client) writeMessage(m *ldap.LDAPMessage) {
@@ -238,7 +241,7 @@ func (c *client) ProcessRequestMessage(message *ldap.LDAPMessage) {
 	w.chanOut = c.chanOut
 	w.messageID = m.MessageID().Int()
 
-	c.srv.Handler.ServeLDAP(w, &m)
+	c.Handler.ServeLDAP(w, &m)
 }
 
 func (c *client) registerRequest(m *Message) {
