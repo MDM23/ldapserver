@@ -11,14 +11,11 @@ import (
 
 type client struct {
 	net.Conn
-	Numero int
-	// srv         *Server
-	// rwc         net.Conn
+	Numero          int
 	br              *bufio.Reader
 	bw              *bufio.Writer
 	chanOut         chan *ldap.LDAPMessage
 	wg              sync.WaitGroup
-	closing         chan bool
 	requestList     map[int]*Message
 	mutex           sync.Mutex
 	writeDone       chan bool
@@ -64,7 +61,6 @@ func (c *client) ReadPacket() (*messagePacket, error) {
 func (c *client) serve() {
 	defer c.close()
 
-	c.closing = make(chan bool)
 	if onc := c.onNewConnection; onc != nil {
 		if err := onc(c.Conn); err != nil {
 			Logger.Printf("Erreur OnNewConnection: %s", err)
@@ -85,30 +81,9 @@ func (c *client) serve() {
 		close(c.writeDone)
 	}()
 
-	// Listen for server signal to shutdown
-	go func() {
-		for {
-			select {
-			case <-c.closing:
-				c.wg.Add(1)
-				r := NewExtendedResponse(LDAPResultUnwillingToPerform)
-				r.SetDiagnosticMessage("server is about to stop")
-				r.SetResponseName(NoticeOfDisconnection)
-
-				m := ldap.NewLDAPMessageWithProtocolOp(r)
-
-				c.chanOut <- m
-				c.wg.Done()
-				c.SetReadDeadline(time.Now().Add(time.Millisecond))
-				return
-			}
-		}
-	}()
-
 	c.requestList = make(map[int]*Message)
 
 	for {
-
 		if c.ReadTimeout != 0 {
 			c.SetReadDeadline(time.Now().Add(c.ReadTimeout))
 		}
@@ -173,7 +148,16 @@ func (c *client) serve() {
 // * signal to server that client shutdown is ok
 func (c *client) close() {
 	Logger.Printf("client %d close()", c.Numero)
-	close(c.closing)
+
+	c.wg.Add(1)
+	r := NewExtendedResponse(LDAPResultUnwillingToPerform)
+	r.SetDiagnosticMessage("server is about to stop")
+	r.SetResponseName(NoticeOfDisconnection)
+
+	m := ldap.NewLDAPMessageWithProtocolOp(r)
+
+	c.chanOut <- m
+	c.wg.Done()
 
 	// stop reading from client
 	c.SetReadDeadline(time.Now().Add(time.Millisecond))
@@ -195,8 +179,6 @@ func (c *client) close() {
 	<-c.writeDone // Wait for the last message sent to be written
 	c.Close()     // close client connection
 	Logger.Printf("client [%d] connection closed", c.Numero)
-
-	// c.srv.wg.Done() // signal to server that client shutdown is ok
 }
 
 func (c *client) writeMessage(m *ldap.LDAPMessage) {
