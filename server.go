@@ -11,13 +11,15 @@ type Server struct {
 	Listener     net.Listener
 	ReadTimeout  time.Duration // optional read timeout
 	WriteTimeout time.Duration // optional write timeout
-	// wg           sync.WaitGroup // group of goroutines (1 by client)
-	chDone  chan bool // Channel Done, value => shutdown
-	clients map[int]*client
+	chDone       chan bool     // Channel Done, value => shutdown
+	clients      map[int]*client
 
 	// OnNewConnection, if non-nil, is called on new connections.
 	// If it returns non-nil, the connection is closed.
 	OnNewConnection func(c net.Conn) error
+
+	// OnConnectionClosed is used to notify about a closed client connection
+	OnConnectionClosed func(clientID int)
 
 	// Handler handles ldap message received from client
 	// it SHOULD "implement" RequestHandler interface
@@ -109,14 +111,7 @@ func (s *Server) serve() error {
 		Logger.Printf("Connection client [%d] from %s accepted", cli.Numero, cli.RemoteAddr().String())
 
 		s.clients[i] = cli
-		// s.wg.Add(1)
-
 		go cli.serve()
-
-		// go func() {
-		// 	cli.serve()
-		// 	s.wg.Done()
-		// }()
 	}
 }
 
@@ -124,15 +119,14 @@ func (s *Server) serve() error {
 // client has a writer and reader buffer
 func (s *Server) newClient(conn net.Conn) (c *client, err error) {
 	c = &client{
-		Conn: conn,
-		// srv: s,
-		// rwc: rwc,
-		br:              bufio.NewReader(conn),
-		bw:              bufio.NewWriter(conn),
-		onNewConnection: s.OnNewConnection,
-		Handler:         s.Handler,
-		ReadTimeout:     s.ReadTimeout,
-		WriteTimeout:    s.WriteTimeout,
+		Conn:               conn,
+		br:                 bufio.NewReader(conn),
+		bw:                 bufio.NewWriter(conn),
+		onNewConnection:    s.OnNewConnection,
+		Handler:            s.Handler,
+		ReadTimeout:        s.ReadTimeout,
+		WriteTimeout:       s.WriteTimeout,
+		onConnectionClosed: s.closeConnection,
 	}
 	return c, nil
 }
@@ -157,7 +151,18 @@ func (s *Server) Stop() {
 		}
 	}
 
-	// s.wg.Wait()
 	Logger.Print("all clients connection closed")
 	s.Listener.Close()
+}
+
+// closeConnection is called by a client after the connection has been
+// terminated. We use it to delete the client instance from our client map
+// and, if it has been set, run the OnConnectionClosed callback of the server
+// instance.
+func (s *Server) closeConnection(clientID int) {
+	delete(s.clients, clientID)
+
+	if cb := s.OnConnectionClosed; cb != nil {
+		cb(clientID)
+	}
 }

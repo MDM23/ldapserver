@@ -11,19 +11,20 @@ import (
 
 type client struct {
 	net.Conn
-	Numero          int
-	br              *bufio.Reader
-	bw              *bufio.Writer
-	chanOut         chan *ldap.LDAPMessage
-	wg              sync.WaitGroup
-	requestList     map[int]*Message
-	mutex           sync.Mutex
-	writeDone       chan bool
-	rawData         []byte
-	onNewConnection func(c net.Conn) error
-	Handler         Handler
-	ReadTimeout     time.Duration // optional read timeout
-	WriteTimeout    time.Duration // optional write timeout
+	Numero             int
+	br                 *bufio.Reader
+	bw                 *bufio.Writer
+	chanOut            chan *ldap.LDAPMessage
+	wg                 sync.WaitGroup
+	requestList        map[int]*Message
+	mutex              sync.Mutex
+	writeDone          chan bool
+	rawData            []byte
+	onNewConnection    func(c net.Conn) error
+	onConnectionClosed func(clientID int)
+	Handler            Handler
+	ReadTimeout        time.Duration // optional read timeout
+	WriteTimeout       time.Duration // optional write timeout
 }
 
 func (c *client) GetConn() net.Conn {
@@ -179,6 +180,10 @@ func (c *client) close() {
 	<-c.writeDone // Wait for the last message sent to be written
 	c.Close()     // close client connection
 	Logger.Printf("client [%d] connection closed", c.Numero)
+
+	if cb := c.onConnectionClosed; cb != nil {
+		cb(c.Numero)
+	}
 }
 
 func (c *client) writeMessage(m *ldap.LDAPMessage) {
